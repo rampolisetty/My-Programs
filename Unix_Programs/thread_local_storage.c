@@ -46,6 +46,7 @@ main(int argc, char **argv)
 
     if (argc != 2) {
         fprintf(stderr, "\nInvalid arguments\n");
+        exit(EXIT_FAILURE);
     }
     else {
         for (idx = 0; idx < atoi(argv[1]); idx++) {
