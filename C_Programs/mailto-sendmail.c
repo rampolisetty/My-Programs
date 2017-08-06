@@ -1,8 +1,8 @@
 /*
  * mailto-sendmail.c
  *
- * Given a mailto URI (which is of one of the below formats) parses the same
- * and sends a mail with given data. This logic can be reused in our CLI. 
+ * Given a mailto URI (example can be one of the below formats) parses the same
+ * and sends a mail with given data.
  *
  * Examples: 
  *     mailto:name@domain.net
@@ -23,6 +23,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#include <assert.h>
 
 #include <unistd.h>
 #include <err.h>
@@ -31,7 +32,6 @@
 #include <sys/stat.h>
 
 #include <curl/curl.h>
-
 
 /* Our defines */
 
@@ -47,36 +47,43 @@
 #define MAILTO_KEY_DELIM_CHAR '&'
 #define MAILTO_VALUE_DELIM_CHAR ','
 
-/* List of allowed keys/case sensitive */
+#define MAILTO_COLON_STR ":"
+#define MAILTO_NEWLINE_STR "\n"
+#define MAILTO_SPACE_STR " "
+
+/* List of allowed keys, case sensitive */
 #define KEY_FROM "from"
-#define KEY_SUBJECT "subject"
-#define KEY_SMTP_SERVER "smtp-server"
-#define KEY_USER_NAME "user"
-#define KEY_PASSWORD "password"
 #define KEY_TO "to"
 #define KEY_CC "cc"
 #define KEY_BCC "bcc"
+#define KEY_SUBJECT "subject"
+#define KEY_BODY "body"
+#define KEY_SMTP_SERVER "smtp-server"
+#define KEY_USER_NAME "user"
+#define KEY_PASSWORD "password"
 
 /* These strings are for header information */
 #define HEADER_STR_FROM "From"
 #define HEADER_STR_SUBJECT "Subject"
+#define HEADER_STR_BODY "Body"
 #define HEADER_STR_TO "To"
 #define HEADER_STR_CC "Cc"
 #define HEADER_STR_BCC "Bcc"
 #define HEADER_ALIAS_SEPARATOR ", "
+#define HEADER_COLON_STR MAILTO_COLON_STR
 
 /*
  * A TAILQ to hold a list of aliases (email addresses).
  */
-typedef struct cli_mailto_alias_s {
-    char *cma_value;                                  /* Value */
-    STAILQ_ENTRY(cli_mailto_alias_s) cma_sibling;     /* Sibling */
-} cli_mailto_alias_t;
+typedef struct cli_mailto_alias_node_s {
+    char *cman_alias;                                       /* Value */
+    STAILQ_ENTRY(cli_mailto_alias_node_s) cman_sibling;     /* Sibling */
+} cli_mailto_alias_node_t;
 
 /* Head of TAILQ */
 typedef
 STAILQ_HEAD(cli_mailto_alias_list_s, 
-            cli_mailto_alias_s) cli_mailto_alias_list_t;
+            cli_mailto_alias_node_s) cli_mailto_alias_list_t;
 
 /*
  * A struct to hold parsed mailto URI Data.
@@ -84,10 +91,10 @@ STAILQ_HEAD(cli_mailto_alias_list_s,
 typedef struct cli_mailto_uri_data_s {
     char *cmud_from;                      /* From address */
     char *cmud_subject;                   /* Subject */
+    char *cmud_body;                      /* Body of the mail. */
     char *cmud_smtp_server;               /* Smtp server */
     char *cmud_user_name;                 /* User name for SMTP login */
     char *cmud_password;                  /* Password (plain text) for SMTP login */
-    char *cmud_body;                      /* Body of the mail. TODO */
     cli_mailto_alias_list_t *cmud_to_list;/* TO List */
     cli_mailto_alias_list_t *cmud_cc_list;/* CC List */
     cli_mailto_alias_list_t *cmud_bcc_list;/* BCC List */
@@ -104,6 +111,8 @@ allocadupx (char *to, const char *from)
 }
 #define ALLOCADUP(s) allocadupx((char *) alloca(strlen(s) + 1), s)
 
+#define INSIST(x) assert(x)
+
 static inline int
 streq (const char *red, const char *blue) 
 {
@@ -118,18 +127,20 @@ streq (const char *red, const char *blue)
  * cli_mailto_alias_node_new () -- Allocates memory for storing a single alias
  * node. 
  */
-static inline cli_mailto_alias_t *
+static inline cli_mailto_alias_node_t *
 cli_mailto_alias_node_new (char *to_address)
 {
-    cli_mailto_alias_t *ptr = NULL;
+    cli_mailto_alias_node_t *ptr = NULL;
 
-    ptr = calloc(1, sizeof(cli_mailto_alias_t));
-    /* TODO INSIST */
+    /* Allocate memory for one alias node */
+    ptr = calloc(1, sizeof(cli_mailto_alias_node_t));
+    INSIST(ptr);
 
-    ptr->cma_value = strdup(to_address);
-    /* TODO INSIST */
+    /* Copy data */
+    ptr->cman_alias = strdup(to_address);
+    INSIST(ptr->cman_alias);
 
-    return ptr;
+    return ptr; /* Done */
 }
 
 /*
@@ -141,24 +152,25 @@ cli_mailto_alias_list_new (void)
 {
     void *ptr = NULL;
 
+    /* Allocate memory for an alias list */
     ptr = calloc(1, sizeof(cli_mailto_alias_list_t));
-    /* TODO INSIST */
+    INSIST(ptr);
 
-    return ptr;
+    return ptr; /* Done */
 }
 
 /*
  * cli_mailto_uri_data_node_new () -- Allocates memory to hold
- * cli_mailto_uri_data_t. Initializes the allocated memory chunk to zero.
+ * cli_mailto_uri_data_t. 
  */
 static inline cli_mailto_uri_data_t *
 cli_mailto_uri_data_node_new (void)
 {
     cli_mailto_uri_data_t *ptr = NULL;
 
-    /* Zeroize */
+    /* Allocate memory for mailto uri data */
     ptr = calloc(1, sizeof(cli_mailto_uri_data_t));
-    /* TODO replace with INIST */
+    INSIST(ptr);
 
     /* Allocate memory for alias lists and initialize them */
     ptr->cmud_to_list = cli_mailto_alias_list_new();
@@ -174,53 +186,114 @@ cli_mailto_uri_data_node_new (void)
 }
 
 /*
- * print_alias_list () -- Helper function to print aliases from the given list
+ * delete_alias_node () -- Delete the memory occupied by mail to alias node.
  */
 static void
-print_alias_list (cli_mailto_alias_list_t *to_listp, 
-                  char *sep_str, FILE *fp)
+delete_alias_node (cli_mailto_alias_node_t *nodep)
 {
-    cli_mailto_alias_t *nodep = NULL;
+    /* Make sure the data is sane */
+    if (!nodep)
+        return;
 
-    STAILQ_FOREACH(nodep, to_listp, cma_sibling) {
-        fprintf(fp ? : stdout, "%s%s", 
-                nodep->cma_value,
-                STAILQ_NEXT(nodep, cma_sibling) ? sep_str : "");
-    }
+    /* Free the alias */
+    if (nodep->cman_alias)
+        free(nodep->cman_alias);
+
+    /* Release the node memory */
+    free(nodep);
 }
 
 /*
- * cli_construct_alias_list () -- Parses the given alias list and prepares a
- * list of aliases of type cli_mailto_alias_list_t.
+ * delete_alias_list () -- Releases memory pointed by mail to alias node list.
  */
-void
-cli_construct_alias_list (char *alias_list_buf, 
-                        cli_mailto_alias_list_t *in_alias_list)
+static void
+delete_alias_list (cli_mailto_alias_list_t *in_listp)
 {
-    cli_mailto_alias_t *nodep = NULL;
-    char *tok = NULL;
-    char *save_ptr = NULL;
+    cli_mailto_alias_node_t *nodep = NULL;
 
-    if (!alias_list_buf || *alias_list_buf == '\0')
+    /* Make sure the data is sane */
+    if (!in_listp)
         return;
 
-    /*
-     * We can support appending the list too. It may happen in below example
-     * cases:
-     *
-     * Ex:
-     * mailto://abc@domain.com?to=def@domain.com&cc=ghi@domain.net&cc=xyz@domain.com,root@domain.net
-     *
-     * Now scan through the alias list and add them to our list given.
-     */
-    tok = strtok_r(alias_list_buf, ",", &save_ptr);
-    while (tok) {
-        nodep = cli_mailto_alias_node_new(tok);
-        STAILQ_INSERT_TAIL(in_alias_list, nodep, cma_sibling);
-        tok = strtok_r(NULL, ",", &save_ptr);
+    /* Traverse complete list and delete each node */
+    STAILQ_FOREACH(nodep, in_listp, cman_sibling) {
+        /* Remove this from STAILQ */
+        STAILQ_REMOVE(in_listp, nodep, cli_mailto_alias_node_s, cman_sibling);
+        /* Release the memory occupied by node's internals */
+        delete_alias_node(nodep);
     }
+
+    /* Now free the list head */
+    free(in_listp);
 }
 
+/*
+ * delete_mailto_uri_data () -- Deletes the memory pointed by mailto uri data.
+ */
+static void
+delete_mailto_uri_data (cli_mailto_uri_data_t *mailto_uri_data)
+{
+    /* Make sure the data is sane */
+    if (!mailto_uri_data)
+        return;
+
+    /* Free the from address */
+    if (mailto_uri_data->cmud_from)
+        free(mailto_uri_data->cmud_from);
+
+    /* Free the subject */
+    if (mailto_uri_data->cmud_subject)
+        free(mailto_uri_data->cmud_subject);
+
+    /* Free the body */
+    if (mailto_uri_data->cmud_body)
+        free(mailto_uri_data->cmud_body);
+
+    /* Free the smtp server */
+    if (mailto_uri_data->cmud_smtp_server)
+        free(mailto_uri_data->cmud_smtp_server);
+
+    /* Free the user name */
+    if (mailto_uri_data->cmud_user_name)
+        free(mailto_uri_data->cmud_user_name);
+
+    /* Free the password */
+    if (mailto_uri_data->cmud_password)
+        free(mailto_uri_data->cmud_password);
+
+    /* Free the alias lists */
+    delete_alias_list(mailto_uri_data->cmud_to_list);
+    delete_alias_list(mailto_uri_data->cmud_cc_list);
+    delete_alias_list(mailto_uri_data->cmud_bcc_list);
+
+    /* Free the node */
+    free(mailto_uri_data);
+}
+
+/*
+ * print_alias_list () -- Helper function to print aliases from the given
+ * alias list. Each mail alias is separated by the given separator, output
+ * would be defaulted to stdout if there is no file pointer given.
+ */
+static void
+print_alias_list (cli_mailto_alias_list_t *in_listp, 
+                  char *sep_str, FILE *fp)
+{
+    cli_mailto_alias_node_t *nodep = NULL;
+
+    if (!in_listp)
+        return;
+
+    /* If there is no separator string given, default to empty space */
+    if (!sep_str)
+        sep_str = MAILTO_SPACE_STR;
+
+    STAILQ_FOREACH(nodep, in_listp, cman_sibling) {
+        fprintf(fp ? : stdout, "%s%s", 
+                nodep->cman_alias,
+                STAILQ_NEXT(nodep, cman_sibling) ? sep_str : "");
+    }
+}
 
 /*
  * cli_validate_mailto_data () -- Validates the given mailto uri data.
@@ -258,21 +331,58 @@ cli_validate_mailto_data (cli_mailto_uri_data_t *mailto_data)
 #ifdef DEBUG
     fprintf(stdout, "\n======= Here is the complete data parsed ====== \n");
     fprintf(stdout, "\nFrom address [%s]\n", mailto_data->cmud_from);
-    fprintf(stdout, "\nSubject [%s]\n", mailto_data->cmud_subject);
+    fprintf(stdout, "\nSubject [%s]\n", mailto_data->cmud_subject ? : "");
+    fprintf(stdout, "\nBody [%s]\n", mailto_data->cmud_body ? : "");
     fprintf(stdout, "\nSMTP Server [%s]\n", mailto_data->cmud_smtp_server);
-    fprintf(stdout, "\nUser name [%s]\n", mailto_data->cmud_user_name);
-    fprintf(stdout, "\nPassword [%s]\n", mailto_data->cmud_password);
+    fprintf(stdout, "\nUser name [%s]\n", mailto_data->cmud_user_name ? : "");
+    fprintf(stdout, "\nPassword [%s]\n", mailto_data->cmud_password ? : "");
     fprintf(stdout, "\nThe TO list....\n");
-    print_alias_list(mailto_data->cmud_to_list, "\n", NULL);
+    print_alias_list(mailto_data->cmud_to_list, MAILTO_NEWLINE_STR, stdout);
     fprintf(stdout, "\n\nThe CC list....\n");
-    print_alias_list(mailto_data->cmud_cc_list, "\n", NULL);
+    print_alias_list(mailto_data->cmud_cc_list, MAILTO_NEWLINE_STR, stdout);
     fprintf(stdout, "\n\nThe BCC list....\n");
-    print_alias_list(mailto_data->cmud_bcc_list, "\n", NULL);
+    print_alias_list(mailto_data->cmud_bcc_list, MAILTO_NEWLINE_STR, stdout);
     fprintf(stdout, "\n=============================================== \n");
 #endif
 
     return rc; /* Done */
 }
+
+/*
+ * cli_construct_alias_list () -- Parses the given alias list buf and prepares a
+ * list of aliases of type cli_mailto_alias_list_t.
+ */
+void
+cli_construct_alias_list (char *alias_list_buf, 
+                          cli_mailto_alias_list_t *in_alias_list)
+{
+    cli_mailto_alias_node_t *nodep = NULL;
+    char *tok = NULL;
+    char *save_ptr = NULL;
+
+    if (!alias_list_buf || *alias_list_buf == '\0')
+        return;
+
+    /*
+     * We can support appending the list too. It may happen in below example
+     * cases:
+     *
+     * Ex:
+     * mailto://abc@domain.com?to=def@domain.com&cc=ghi@domain.net&cc=xyz@domain.com,root@domain.net
+     *
+     * Now scan through the alias list and add them to our list given.
+     *
+     * No special handling is needed for appending, since we always insert at
+     * TAIL.
+     */
+    tok = strtok_r(alias_list_buf, ",", &save_ptr);
+    while (tok) {
+        nodep = cli_mailto_alias_node_new(tok);
+        STAILQ_INSERT_TAIL(in_alias_list, nodep, cman_sibling);
+        tok = strtok_r(NULL, ",", &save_ptr);
+    }
+}
+
 
 /*
  * cli_add_key_value_to_maildata () -- Adds the given value to the given key
@@ -302,6 +412,13 @@ cli_add_key_value_to_maildata (char *key, char *value,
             mailto_uri_data->cmud_smtp_server = strdup(value);
         else
             fprintf(stderr, "\nIgnoring duplicate %s=%s\n", key, value);
+    } else if (streq(key, KEY_BODY)) {
+        /* Copy Body */
+        if (!mailto_uri_data->cmud_body)
+            mailto_uri_data->cmud_body = strdup(value);
+        else
+            fprintf(stderr, "\nIgnoring duplicate %s=%s\n", key, value);
+
     } else if (streq(key, KEY_FROM)) {
         /* Copy From address */
         if (!mailto_uri_data->cmud_from)
@@ -366,7 +483,7 @@ cli_add_key_value (const char *key_value_pair,
 
     /* Get our own memory */
     ptr = strdup(key_value_pair); 
-    /* TODO INSIST */
+    INSIST(ptr);
 
     /*
      * Example: 
@@ -379,6 +496,7 @@ cli_add_key_value (const char *key_value_pair,
         *value = '\0';
         value = value + 1;
     }
+
     /* Add this */
     cli_add_key_value_to_maildata(key, value, mailto_uri_data);
     free(ptr);
@@ -421,7 +539,7 @@ cli_mailto_get_first_delim_ptr (char *mailto_uri, bool log_error)
     ptr = strchr(mailto_uri, MAILTO_KEY_DELIM_CHAR);
     if (ptr && (ptr < first_delim_ptr)) { /* Endianness issues? */
         if (log_error)
-            fprintf(stderr, "\nInvalid mailto URI, invalid '&'\n");
+            fprintf(stderr, "\nInvalid mailto URI, invalid '&' specifier\n");
         return NULL;
     }
 
@@ -470,7 +588,7 @@ cli_construct_mailto_uri_data (const char *mailto_uri,
         /* Prepare TO List buffer */
         to_list_buf_sz = (ptr - mailto_uri_cache + 1);
         to_list_buf = alloca(to_list_buf_sz);
-        /* TODO have INSIST */
+        INSIST(to_list_buf);
         bzero(to_list_buf, to_list_buf_sz);
         strncpy(to_list_buf, mailto_uri_cache, (to_list_buf_sz - 1));
         /* Now preapre the list containing "TO" mail addresses */
@@ -512,7 +630,7 @@ cli_construct_mailto_uri_data (const char *mailto_uri,
          */
         if (!cli_validate_mailto_data(mailto_uri_data)) {
             fprintf(stderr, "\nIgnoring this mailto request\n");
-            /* TODO free the data */
+            delete_mailto_uri_data(mailto_uri_data);
             return NULL;
         }
     }
@@ -636,9 +754,17 @@ cli_print_email_header (FILE *fp,
     }
 
     /* Print Subject */
-    fprintf(fp, "%s: %s\n", HEADER_STR_SUBJECT, mailto_uri_data->cmud_subject);
+    fprintf(fp, "%s: %s\n", HEADER_STR_SUBJECT, 
+            mailto_uri_data->cmud_subject ? : "");
 
     /* Separate header from body */
+    fprintf(fp, "%s", "\n\n");
+
+    /* Print body */
+    if (mailto_uri_data->cmud_body)
+        fprintf(fp, "%s: %s\n", HEADER_STR_BODY, mailto_uri_data->cmud_body);
+
+    /* Separate all this from rest of mail content */
     fprintf(fp, "%s", "\n\n");
 }
 
@@ -649,7 +775,7 @@ static void
 cli_prepare_curl_recipient_list (const cli_mailto_uri_data_t *mailto_uri_data,
                                  struct curl_slist **recipients)
 {
-    cli_mailto_alias_t *nodep = NULL;
+    cli_mailto_alias_node_t *nodep = NULL;
 
     if (!mailto_uri_data || !recipients)
         return;
@@ -663,19 +789,19 @@ cli_prepare_curl_recipient_list (const cli_mailto_uri_data_t *mailto_uri_data,
      * As Mail recipients
      */
 
-    STAILQ_FOREACH(nodep, mailto_uri_data->cmud_to_list, cma_sibling) {
+    STAILQ_FOREACH(nodep, mailto_uri_data->cmud_to_list, cman_sibling) {
         /* Append */
-        *recipients = curl_slist_append(*recipients, nodep->cma_value);
+        *recipients = curl_slist_append(*recipients, nodep->cman_alias);
     }
 
-    STAILQ_FOREACH(nodep, mailto_uri_data->cmud_cc_list, cma_sibling) {
+    STAILQ_FOREACH(nodep, mailto_uri_data->cmud_cc_list, cman_sibling) {
         /* Append */
-        *recipients = curl_slist_append(*recipients, nodep->cma_value);
+        *recipients = curl_slist_append(*recipients, nodep->cman_alias);
     }
 
-    STAILQ_FOREACH(nodep, mailto_uri_data->cmud_bcc_list, cma_sibling) {
+    STAILQ_FOREACH(nodep, mailto_uri_data->cmud_bcc_list, cman_sibling) {
         /* Append */
-        *recipients = curl_slist_append(*recipients, nodep->cma_value);
+        *recipients = curl_slist_append(*recipients, nodep->cman_alias);
     }
 }
 
@@ -769,7 +895,7 @@ cli_do_send_mail (const char *mailto_uri)
     /* Parse and fetch mail data */
     mailto_uri_data = cli_parse_mailto_uri(mailto_uri);
     if (!mailto_uri_data) {
-        fprintf(stderr, "\nUnable to parse mail data, please refer "
+        fprintf(stderr, "\nFailed to parse mailto data, please refer "
                 "documentation for more details\n");
         return;
     }
@@ -788,8 +914,11 @@ cli_do_send_mail (const char *mailto_uri)
     cli_print_email_header(fp, mailto_uri_data);
     fclose(fp); /* Done printing header. */
 
-    /* Now send mail using libcurl helpers TODO */
+    /* Now send mail using libcurl helpers */
     cli_send_mail_with_libcurl(mailto_uri_data, TMP_FILE_EMAIL);
+
+    /* Release the memory */
+    delete_mailto_uri_data(mailto_uri_data);
 
 #ifndef DEBUG
     unlink(TMP_FILE_EMAIL);
@@ -835,7 +964,7 @@ main (int argc, char *argv[])
      */
     cli_do_send_mail(argv[1]);
 
-    fprintf(stdout, "\n\n");
+    fprintf(stdout, "\n");
 
     return EXIT_SUCCESS;
 }
