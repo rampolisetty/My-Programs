@@ -1,6 +1,11 @@
 # My Makefile
 
 all: shared_lib_usage
+	@echo ""
+	@echo ""
+	@echo ""
+	@echo "After running make, make sure to set LD_LIBRARY_PATH"
+	@echo ""
 
 shared_object_1.o: shared_object_1.c
 	gcc -g -c -Wall -Werror -fpic shared_object_1.c
