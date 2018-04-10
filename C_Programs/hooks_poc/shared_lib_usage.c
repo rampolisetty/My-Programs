@@ -1,5 +1,8 @@
 /*
  * Program to demonstrate usage of gcc's __attribute__((constructor))
+ *
+ * Reference:
+ * https://www.cprogramming.com/tutorial/shared-libraries-linux-gcc.html
  */
 
 #include <stdio.h>
