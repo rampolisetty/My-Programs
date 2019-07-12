@@ -14,7 +14,7 @@
  * Output : No
  *
  * Input: str = "geeks", cs = "geeks"
- * Output : No
+ * Output : Yes
  *
  * How to compile?
  *
@@ -51,8 +51,13 @@ do_check_string_start_end (const char *master_str,
 
     /* Few checks for optimization */
     if (match_str_len == 0 || master_str_len == 0
-        || master_str_len <= match_str_len)
+        || master_str_len < match_str_len)
         return false;
+
+    /* Identical strings, perfect match!!! */
+    if ((master_str_len == match_str_len)
+        && (strncmp(master_str, match_str, match_str_len) == 0))
+        return true;
 
     /* Perform match at start */
     if (strncmp(master_str, match_str, match_str_len)) {
