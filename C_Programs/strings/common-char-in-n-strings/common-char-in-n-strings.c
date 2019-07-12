@@ -20,6 +20,10 @@
  *           orange
  *
  *  Output : a e
+ *
+ * How to compile?
+ *
+ * gcc -g -Wall -Werror common-char-in-n-strings.c
  */
 
 #include <stdio.h>
