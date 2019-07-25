@@ -2,6 +2,10 @@
  * my_strstr.c -- My own implementation of strstr() libc function.
  *
  * Author: Ram Polisetty
+ *
+ * How to run the program?
+ *
+ * gcc -Wall -Werror my_strstr.c
  */
 
 #include <stdio.h>
