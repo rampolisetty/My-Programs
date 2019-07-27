@@ -73,7 +73,7 @@ display_common_char_in_strings (const char **input_strings)
         /* print the same */
         fprintf(stdout, "Input string \"%s\"\n", ptr);
 
-        /* Initialize presence array with all 'false's */
+        /* Initialize mark array with all 'false's */
         memset(mark_array, false, sizeof(mark_array));
 
         /* Travese each char in ptr and mark its corresponding pos as true */
