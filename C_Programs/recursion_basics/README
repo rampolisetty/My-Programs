@@ -1,0 +1,7 @@
+This directory contains basic examples on Recursion.
+
+Notes
+=====
+a) Recursive algorithms have two types of cases: base case, recursive case,
+
+b) Every recursive function case must terminate at a base case.
