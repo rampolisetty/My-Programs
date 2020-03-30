@@ -55,7 +55,7 @@ main (int32_t argc, const char **argv)
     unsigned long long factorial = 0;
 
     if (argc != 2) {
-        errx(EXIT_FAILURE, "Usage: ./a.out <input-decimal-number>\n");
+        errx(EXIT_FAILURE, "Usage: ./a.out <input-any-format-number>\n");
     }
 
     /* Perform the conversion */
